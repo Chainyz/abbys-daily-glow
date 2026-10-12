@@ -14,6 +14,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN", "")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 POST_TIME = os.getenv("POST_TIME", "15:30")
+TEST_POST_NOW = os.getenv("TEST_POST_NOW", "").lower() == "true"
 
 # UK civil time: automatically follows GMT/BST changes.
 TIMEZONE = ZoneInfo("Europe/London")
@@ -30,9 +31,12 @@ except ValueError:
     raise SystemExit("POST_TIME must be a valid 24-hour time, e.g. 15:30")
 
 if not TOKEN or CHANNEL_ID == 0:
-    raise SystemExit("Set DISCORD_TOKEN and CHANNEL_ID in your .env file.")
+    raise SystemExit("Set DISCORD_TOKEN and CHANNEL_ID in Railway Variables.")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+)
 
 QUOTES = [
     "Abby, never forget how stunning you are — not just in the way you look, but in the kindness, courage, and light you bring into the world. ✨ I love you bubba",
@@ -67,23 +71,33 @@ QUOTES = [
     "Abby, you are allowed to take up room, change your mind, start again, and become everything you've been dreaming of. 🌟 I love you pumpkin",
 ]
 
+
 def load_state():
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {"image_index": 0, "quote_index": 0}
 
+
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
+
 async def post_daily():
+    image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+    # Use the selfies folder when present. Also support photos beside bot.py,
+    # so the bot still works if the repository layout changes.
+    image_folder = SELFIES_DIR if SELFIES_DIR.exists() else BASE_DIR
     images = sorted(
-        p for p in SELFIES_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-    ) if SELFIES_DIR.exists() else []
+        p for p in image_folder.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in image_extensions
+        and p.name.lower().startswith("selfie_")
+    )
 
     if not images:
-        logging.error("No selfies found in the selfies folder.")
+        logging.error("No selfie images found in the selfies folder or beside bot.py.")
         return
 
     channel = bot.get_channel(CHANNEL_ID)
@@ -113,6 +127,7 @@ async def post_daily():
     save_state(state)
     logging.info("Posted %s and quote %d.", photo.name, quote_index + 1)
 
+
 @tasks.loop(time=SCHEDULE_TIME)
 async def daily_post():
     try:
@@ -120,22 +135,37 @@ async def daily_post():
     except Exception:
         logging.exception("Daily post failed.")
 
+
 @daily_post.before_loop
 async def before_daily_post():
     await bot.wait_until_ready()
+
 
 @daily_post.error
 async def daily_post_error(error):
     logging.error("Scheduler error: %s", error)
 
+
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
 
 @bot.event
 async def on_ready():
     logging.info("Logged in as %s", bot.user)
     logging.info("Daily post scheduled for %s Europe/London time.", POST_TIME)
+
+    if TEST_POST_NOW:
+        try:
+            await post_daily()
+            logging.info(
+                "One-time test post completed. Remove TEST_POST_NOW from Railway Variables now."
+            )
+        except Exception:
+            logging.exception("One-time test post failed.")
+
     if not daily_post.is_running():
         daily_post.start()
+
 
 bot.run(TOKEN)
